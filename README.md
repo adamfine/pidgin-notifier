@@ -8,16 +8,16 @@ any activity in designated conversations.
 Substrings and conversations can be designated for highlighting by placing them
 in a JSON file - ~/.pidgin-notifier by default. The format of this file:
 
-{
-    "texts": [
-        "some designated",
-        "case-insensitive substrings"
-    ],
-    "convs": [
-        "some",
-        "conversations"
-    ]
-}
+    {
+        "texts": [
+            "some designated",
+            "case-insensitive substrings"
+        ],
+        "convs": [
+            "some",
+            "conversations"
+        ]
+    }
 
 Requires DBus, GObject, LXML and WNCK. Uses visual-notifier to display the
 notifications. Tested on Linux.
