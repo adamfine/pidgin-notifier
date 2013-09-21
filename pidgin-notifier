@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+"""A notification service for the Pidgin IM client. Pops up a visual notification
+when designated substrings are mentioned in any conversation, or when there is
+any activity in designated conversations.
+
+Substrings and conversations can be designated for highlighting by placing them
+in a JSON file - ~/.pidgin-notifier by default. The format of this file:
+
+{
+    "texts": [
+        "some designated",
+        "case-insensitive substrings"
+    ],
+    "convs": [
+        "some",
+        "conversations"
+    ]
+}
+
+Requires DBus, GObject, LXML and WNCK. Uses visual-notifier to display the
+notifications. Tested on Linux.
+"""
+from HTMLParser import HTMLParser
+import json
+from os import getenv
+from os.path import basename, expanduser
+import signal
+from subprocess import Popen
+from re import sub, UNICODE, search
+from sys import argv
+from time import sleep, time
+
+import dbus, gobject
+from dbus.mainloop.glib import DBusGMainLoop
+from lxml.html import fromstring
+import wnck
+
+#-------------------------------------------------------------------------------
+
+IFACE = "im.pidgin.purple.PurpleInterface"
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # prevent the notifier child process from getting zombified
+DEBUG = getenv('DEBUG')
+PURPLE_CONV_TYPE_IM = 1
+PURPLE_CONV_TYPE_CHAT = 2
+
+#-------------------------------------------------------------------------------
+
+
+class Notifier(object):
+    def __init__(self, attach_handlers=True):
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        self.bus = dbus.SessionBus()
+        self.service = self.bus.get_object("im.pidgin.purple.PurpleService", "/im/pidgin/purple/PurpleObject")
+        self.iface = dbus.Interface(self.service, IFACE)
+
+        if attach_handlers:
+            self.attach_handlers()
+        self.load_hot()
+        self.get_win()
+        self.parser = HTMLParser()
+
+    def attach_handlers(self):
+        handle = self.bus.add_signal_receiver
+        for signal in ("ReceivedImMsg", "ReceivedChatMsg"):
+            handle(self.on_msg, dbus_interface=IFACE, signal_name=signal)
+
+    def load_hot(self):
+        d = json.load(open(expanduser('~/.' + basename(argv[0]))))
+        self.tar_convs = d['convs']
+        self.tar_texts = d['texts']
+        self.convs = {}
+        self.hot_convs = {}
+
+    def get_win(self):
+        screen = wnck.screen_get_default()
+        screen.force_update()
+        wins = [win for win in screen.get_windows()
+                if win.get_application().get_name() == 'Pidgin'
+                and win.get_name() != 'Buddy List']
+        if not wins: raise RuntimeError('could not find the Pidgin chat window')
+        self.win = wins[0]
+
+    def format_msg(self, sender, conv, msg, ignored=set(['gemm'])):
+        source = '%s/%s' % (self.shorten(conv), self.shorten(sender) or sender)
+        return '<span style="color: maroon;">%s</span>: %s<br/>' % (source, msg)
+
+    def loop(self):
+        gobject.MainLoop().run()
+
+    def on_msg(self, account, sender, message, conversation, flags):
+        if DEBUG: print 'Raw message: %r' % message
+        message = sub('\s+', ' ', fromstring(message).text_content().decode('utf8'), flags=UNICODE)
+        if DEBUG: print 'Clean message: %r' % message
+        cid = int(conversation)
+        if DEBUG:
+            message = self.parser.unescape(message)
+            print map(str, [account, sender, message, conversation, flags, '--', str(self.iface.PurpleConversationGetTitle(cid))])
+        if cid not in self.convs:  # first time this conversation was encountered
+            title = str(self.iface.PurpleConversationGetTitle(cid))
+            self.convs[cid] = title
+            if title in self.tar_convs:
+                self.hot_convs[cid] = title
+        else:
+            title = self.convs.get(cid)
+
+        if self.hot_convs.get(cid):
+            if self.win.is_shaded():
+                if DEBUG: print 'notified'
+                #import pdb; pdb.set_trace()
+                msg = self.format_msg(sender, title, message)
+                Popen(['visual-notifier', msg])
+            elif not self.win.is_minimized():
+                if DEBUG: print 'activated'
+                self.win.activate(int(time()))
+
+        if any(s for s in self.tar_texts if s in message.lower()):
+            if DEBUG: print 'hilighted'
+            if self.win.is_shaded():
+                self.win.activate(int(time()))
+            msg = self.format_msg(sender, title, message)
+            Popen(['visual-notifier', msg])
+
+
+    def shorten(self, title):
+        if '@' in title:
+            return title.split('@')[0]
+        elif '/' in title:
+            return title.split('/')[1]
+        return title
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    arg = parser.add_argument
+    arg('--send', help='send message')
+    args = parser.parse_args()
+
+
+    if args.send:
+        notifier = Notifier(attach_handlers=False)
+        dst, msg = search('(.*?): (.*)$', args.send).groups()
+        f = notifier.iface
+        for cid in f.PurpleGetConversations():
+            if f.PurpleConversationGetTitle(cid) == dst:
+                if f.PurpleConversationGetType(cid) == PURPLE_CONV_TYPE_IM:
+                    im = f.PurpleConvIm(cid)
+                    f.PurpleConvImSend(im, msg)
+                elif f.PurpleConversationGetType(cid) == PURPLE_CONV_TYPE_CHAT:
+                    chat = f.PurpleConvChat(cid)
+                    f.PurpleConvChatSend(chat, msg)
+        else:
+            raise RuntimeError('dst %r not found' % dst)
+    else:
+        notifier = Notifier()
+        notifier.loop()

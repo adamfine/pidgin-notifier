@@ -1,0 +1,74 @@
+#!/usr/bin/env python
+"""A visual notifier for Linux. Creates a top-level sidebar that shows the
+desired message. If the sidebar is already displayed: appends the message to its
+bottom.
+
+Requires Qt4.
+"""
+
+import argparse, os
+from sys import argv
+from tempfile import gettempdir
+
+from PyQt4 import QtGui, QtCore
+from PyQt4.Qt import Qt
+
+#-------------------------------------------------------------------------------
+
+DEFAULT_TITLE = 'Visual Notifier'
+
+#-------------------------------------------------------------------------------
+
+def notify(msg, title=DEFAULT_TITLE):
+
+    filename = os.path.join(gettempdir(), 'visual_notifier')
+    if os.path.exists(filename):
+        with open(filename, 'w') as fo:
+            fo.write(msg + '\n')
+    else:
+        os.mkfifo(filename)
+        fo = os.fdopen(os.open(filename, os.O_RDONLY | os.O_NONBLOCK))
+        try:
+
+            app = QtGui.QApplication(argv)
+
+            class NotificationWindow(QtGui.QLabel):
+                def mousePressEvent(self, event): app.quit()
+
+
+            timer = QtCore.QTimer()
+            def foo():
+                new = fo.read()
+                if new:
+                    win.setText(win.text() + '\n' + new)
+            timer.timeout.connect(foo)
+            timer.start(1000)
+
+            win = NotificationWindow(msg + '\n')
+            screen_geom = QtGui.QDesktopWidget().availableGeometry()
+            width = screen_geom.width() / 10
+            win.resize(width, screen_geom.height())
+            win.move(screen_geom.width() - width, 0)
+            win.setWindowTitle(title)
+            win.setAttribute(Qt.WA_ShowWithoutActivating)
+            win.setWindowFlags(Qt.ToolTip | Qt.CustomizeWindowHint | Qt.WindowStaysOnTopHint)
+            win.setWordWrap(True)
+            win.setStyleSheet("QLabel { background-color: azure; color: black; border: 1px solid black; }");
+            #win.setFocusPolicy(Qt.NoFocus)
+            win.setAlignment(Qt.AlignTop)
+            win.show()
+
+            app.exec_()
+        finally:
+            fo.close()
+            os.remove(filename)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    a = parser.add_argument
+
+    a('--title', default=DEFAULT_TITLE, help='title of the notification window')
+    a('message', nargs='+', help='initial message')
+    args = parser.parse_args()
+    notify(' '.join(args.message), args.title)
